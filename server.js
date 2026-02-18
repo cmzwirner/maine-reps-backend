@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
 
@@ -11,21 +12,37 @@ const API_KEY = process.env.OPENSTATES_API_KEY;
 const PORT = process.env.PORT || 3000;
 
 // --------------------
+// Rate limiting
+// --------------------
+// This protects your upstream APIs and your server from bursts.
+// Tune as needed. This is a sensible starting point.
+const lookupLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute window
+  max: 60,             // 60 requests/minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests. Please try again shortly." }
+});
+
+// Apply rate limiting only to /lookup
+app.use("/lookup", lookupLimiter);
+
+// --------------------
 // Simple in-memory caches
 // --------------------
-// NOTE: These reset when Render restarts/redeploys (fine for thousands/week).
+// NOTE: These reset when Render restarts/redeploys.
 const geoCache = new Map();      // key: normalized address -> { lat, lon, ts }
 const resultCache = new Map();   // key: "lat,lon" -> { payload, ts }
 
-// Tune TTLs as you like:
-const GEO_TTL_MS = 7 * 24 * 60 * 60 * 1000;      // 7 days
-const RESULT_TTL_MS = 24 * 60 * 60 * 1000;       // 24 hours
+// TTLs
+const GEO_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // 7 days
+const RESULT_TTL_MS = 24 * 60 * 60 * 1000;   // 24 hours
 
 function isFresh(entry, ttlMs) {
   return entry && (Date.now() - entry.ts) < ttlMs;
 }
 
-// Optional: basic health check so base URL shows something
+// Optional: basic health check
 app.get("/", (req, res) => {
   res.json({ ok: true, service: "maine-reps-backend" });
 });
@@ -53,20 +70,16 @@ app.post("/lookup", async (req, res) => {
     if (isFresh(cachedGeo, GEO_TTL_MS)) {
       ({ lat, lon } = cachedGeo);
     } else {
-      const geo = await axios.get(
-        "https://nominatim.openstreetmap.org/search",
-        {
-          params: {
-            q: address + ", Maine",
-            format: "json",
-            limit: 1
-          },
-          // Adding a User-Agent is good practice for Nominatim usage
-          headers: {
-            "User-Agent": "maine-reps-backend/1.0"
-          }
+      const geo = await axios.get("https://nominatim.openstreetmap.org/search", {
+        params: {
+          q: address + ", Maine",
+          format: "json",
+          limit: 1
+        },
+        headers: {
+          "User-Agent": "maine-reps-backend/1.0"
         }
-      );
+      });
 
       if (!geo.data.length) {
         return res.status(404).json({ error: "Address not found" });
@@ -91,16 +104,13 @@ app.post("/lookup", async (req, res) => {
     // --------------------
     // 3) Fetch legislators (OpenStates)
     // --------------------
-    const legislators = await axios.get(
-      "https://v3.openstates.org/people.geo",
-      {
-        params: {
-          lat: lat,
-          lng: lon,
-          apikey: API_KEY
-        }
+    const legislators = await axios.get("https://v3.openstates.org/people.geo", {
+      params: {
+        lat: lat,
+        lng: lon,
+        apikey: API_KEY
       }
-    );
+    });
 
     // --------------------
     // 4) Format response
@@ -126,11 +136,11 @@ app.post("/lookup", async (req, res) => {
         party: p.party || null,
         level,
         jurisdiction: jur,
-        office: role.title || null,               // Senator / Representative
-        chamber,                                   // Senate / House (when applicable)
-        district: role.district || null,           // e.g. "28" or "ME-1" or "Maine"
+        office: role.title || null,
+        chamber,
+        district: role.district || null,
         division_id: role.division_id || null,
-        email: p.email || null,                    // sometimes a form URL, sometimes an email
+        email: p.email || null,
         image: p.image || null,
         openstates_url: p.openstates_url || null
       };
