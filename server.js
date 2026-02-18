@@ -42,7 +42,42 @@ app.post("/lookup", async (req, res) => {
       }
     );
 
-    res.json(legislators.data.results);
+    const results = legislators.data.results.map(p => {
+  const jur = p.jurisdiction?.name || null;
+  const role = p.current_role || {};
+  const chamber =
+    role.org_classification === "upper" ? "Senate" :
+    role.org_classification === "lower" ? "House" :
+    null;
+
+  const level =
+    jur === "United States" ? "Federal" :
+    jur === "Maine" ? "State" :
+    "Other";
+
+  return {
+    name: p.name,
+    given_name: p.given_name || null,
+    family_name: p.family_name || null,
+    party: p.party || null,
+    level,
+    jurisdiction: jur,
+    office: role.title || null,              // Senator / Representative
+    chamber,                                  // Senate / House (when applicable)
+    district: role.district || null,          // e.g. "28" or "ME-1" or "Maine"
+    division_id: role.division_id || null,
+    email: p.email || null,                   // sometimes a form URL, sometimes an email
+    image: p.image || null,
+    openstates_url: p.openstates_url || null
+  };
+});
+
+return res.json({
+  input: address,
+  geocode: { lat, lon },
+  officials: results
+});
+;
 
   } catch (err) {
     console.error(err);
